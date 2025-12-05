@@ -1,0 +1,9 @@
+services:
+  devcontainer:
+    image: mcr.microsoft.com/dotnet/sdk:10.0
+    container_name: microtype_generator
+    volumes:
+      - /var/run/docker.sock:/var/run/docker-host.sock
+      - ../..:/workspaces:cached
+    entrypoint: /usr/local/share/docker-init.sh
+    command: sleep infinity

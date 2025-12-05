@@ -1,0 +1,39 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Web Api",
+            "type": "coreclr",
+            "request": "launch",
+            "preLaunchTask": "dotnet-build",
+            "program": "${workspaceFolder}/src/Api/bin/Debug/net10.0/Api.dll",
+            "args": [],
+            "cwd": "${workspaceFolder}/src/Api",
+            "stopAtEntry": false,
+            "serverReadyAction": {
+                "uriFormat": "http://localhost:%s/metrics",
+                "action": "openExternally",
+                "pattern": "\\bNow listening on:\\s+(https?://\\S+)"
+            },
+            "logging": {
+                "diagnosticsLog": {
+                    "debugEngineAPITracing": "none",
+                },
+                "moduleLoad": false,
+                "browserStdOut": true,
+                "exceptions": true,
+                "programOutput": true,
+            },
+            "launchSettingsFilePath": "${workspaceFolder}/src/Api/Properties/launchSettings.json",
+            "launchSettingsProfile": "http"
+        },
+        {
+            "name": ".NET Core Attach",
+            "type": "coreclr",
+            "request": "attach"
+        }
+    ]
+}
