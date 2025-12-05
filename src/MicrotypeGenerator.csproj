@@ -12,6 +12,21 @@
     <!-- Make the generator available at design time for projects that reference it -->
     <DevelopmentDependency>true</DevelopmentDependency>
     <IsAotCompatible Condition="$([MSBuild]::IsTargetFrameworkCompatible('$(TargetFramework)', 'net10.0'))">true</IsAotCompatible>
+    <!-- NuGet package metadata -->
+    <PackageId>StoicTools.MicrotypeGenerator</PackageId>
+    <Title>StoicTools.MicrotypeGenerator</Title>
+    <Authors>StoicToast4</Authors>
+    <Company>StoicTools</Company>
+    <Description>.NET Roslyn source generator for strongly-typed microtypes via [MicroTypeAttribute&lt;T&gt;].</Description>
+    <PackageTags>source-generator;roslyn;microtype;strongly-typed;dotnet</PackageTags>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <RepositoryUrl>https://github.com/StoicToast4/microtype-generator</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/StoicToast4/microtype-generator</PackageProjectUrl>
+    <Copyright>Copyright © 2025 StoicToast4</Copyright>
+    <PackageReleaseNotes>Initial release of MicrotypeGenerator source generator.</PackageReleaseNotes>
+    <Version>1.0.0</Version>
   </PropertyGroup>
 
   <ItemGroup>
@@ -19,9 +34,10 @@
     <PackageReference Include="Microsoft.CodeAnalysis.Analyzers" PrivateAssets="all" />
   </ItemGroup>
 
-  <!-- Package the generator in the analyzer directory of the nuget package -->
+  <!-- Package the generator as an analyzer for NuGet consumers -->
   <ItemGroup>
     <None Include="$(OutputPath)\$(AssemblyName).dll" Pack="true" PackagePath="analyzers/dotnet/cs" Visible="false" />
+    <None Include="..\README.md" Pack="true" PackagePath="\" />
   </ItemGroup>
 
 </Project>
