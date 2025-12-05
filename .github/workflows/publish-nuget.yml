@@ -5,31 +5,67 @@ on:
     tags:
       - 'v*.*.*'       # Release versions: v1.0.0, v2.1.3
       - 'v*.*.*-*'     # Pre-release versions: v1.0.0-beta.1, v2.0.0-rc.1
+  workflow_dispatch:   # Allow manual triggering for testing
+    inputs:
+      version:
+        description: 'Version to build (e.g., 1.0.0 or 1.0.0-beta.1)'
+        required: true
+        default: '0.0.1-manual'
+      publish:
+        description: 'Publish to NuGet.org?'
+        required: true
+        type: boolean
+        default: false
+      prerelease:
+        description: 'Mark as pre-release on NuGet? (auto-detected from version if it contains -)'
+        required: false
+        type: boolean
+        default: false
 
 jobs:
   publish:
     runs-on: ubuntu-latest
     permissions:
-      contents: write  # For creating GitHub releases
-      packages: write  # For publishing packages
+      contents: write
+      packages: write
     
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
       with:
-        fetch-depth: 0  # Full history for better release notes
+        fetch-depth: 0
       
-    - name: Extract version from tag
+    - name: Extract version from tag or input
       id: version
       run: |
-        TAG=${GITHUB_REF#refs/tags/v}
-        echo "version=$TAG" >> $GITHUB_OUTPUT
-        echo "Version: $TAG"
+        if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          VERSION="${{ github.event.inputs.version }}"
+          # Check if prerelease input is set, otherwise auto-detect from version
+          if [ "${{ github.event.inputs.prerelease }}" = "true" ]; then
+            IS_PRERELEASE="true"
+          elif [[ "$VERSION" == *"-"* ]]; then
+            IS_PRERELEASE="true"
+          else
+            IS_PRERELEASE="false"
+          fi
+        else
+          VERSION=${GITHUB_REF#refs/tags/v}
+          # Auto-detect prerelease from version string
+          if [[ "$VERSION" == *"-"* ]]; then
+            IS_PRERELEASE="true"
+          else
+            IS_PRERELEASE="false"
+          fi
+        fi
+        echo "version=$VERSION" >> $GITHUB_OUTPUT
+        echo "is_prerelease=$IS_PRERELEASE" >> $GITHUB_OUTPUT
+        echo "Version: $VERSION"
+        echo "Pre-release: $IS_PRERELEASE"
       
     - name: Setup .NET
       uses: actions/setup-dotnet@v4
       with:
-        dotnet-version: '10.0.x'  # LTS version
+        dotnet-version: '8.0.x'
         
     - name: Restore dependencies
       run: dotnet restore src/MicrotypeGenerator.csproj
@@ -40,20 +76,38 @@ jobs:
     - name: Pack
       run: dotnet pack src/MicrotypeGenerator.csproj --configuration Release --no-build --output ./nupkg /p:Version=${{ steps.version.outputs.version }}
       
+    - name: List package contents (dry-run)
+      run: |
+        echo "📦 Package created:"
+        ls -lh ./nupkg/
+        echo ""
+        echo "📋 Package contents:"
+        unzip -l ./nupkg/*.nupkg
+      
     - name: Publish to NuGet.org
+      if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.event.inputs.publish == 'true')
       run: dotnet nuget push ./nupkg/*.nupkg --api-key ${{ secrets.NUGET_API_KEY }} --source https://api.nuget.org/v3/index.json --skip-duplicate
       env:
         NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+    
+    - name: Skipping publish (dry-run)
+      if: github.event_name == 'workflow_dispatch' && github.event.inputs.publish != 'true'
+      run: echo "⏭️  Skipping NuGet.org publish (dry-run mode)"
       
     - name: Create GitHub Release
+      if: github.event_name == 'push'
       uses: softprops/action-gh-release@v2
       with:
         files: ./nupkg/*.nupkg
         generate_release_notes: true
         draft: false
-        prerelease: ${{ contains(steps.version.outputs.version, '-') }}
+        prerelease: ${{ steps.version.outputs.is_prerelease == 'true' }}
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    
+    - name: Skipping GitHub release (manual run)
+      if: github.event_name == 'workflow_dispatch'
+      run: echo "⏭️  Skipping GitHub release creation (only created for tag pushes)"
       
     - name: Upload package artifact
       uses: actions/upload-artifact@v4
