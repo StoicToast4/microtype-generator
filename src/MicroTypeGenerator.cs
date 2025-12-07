@@ -3,6 +3,8 @@ using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.Text;
 
+using static Microsoft.CodeAnalysis.SymbolEqualityComparer;
+
 namespace MicrotypeGenerator.Generators;
 
 [Generator]
@@ -69,10 +71,13 @@ public sealed class MicroTypeIncrementalGenerator : IIncrementalGenerator
     private static string GetHintName(INamedTypeSymbol symbol)
     {
         var ns = symbol.ContainingNamespace?.ToDisplayString() ?? "";
-        var name = symbol.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat).Replace("<", "_").Replace(">", "_").Replace(".", "_");
+        var name = symbol.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat);
+        var safeName = new StringBuilder(name.Length);
+        foreach (var c in name)
+            safeName.Append(c is '<' or '>' or '.' ? '_' : c);
         if (string.IsNullOrWhiteSpace(ns))
-            return name + ".g.cs";
-        return ns + "." + name + ".g.cs";
+            return safeName + ".g.cs";
+        return ns + "." + safeName + ".g.cs";
     }
 
     private static string GenerateSource(MicroTypeTarget target)
@@ -80,17 +85,18 @@ public sealed class MicroTypeIncrementalGenerator : IIncrementalGenerator
         var symbol = target.Symbol;
         var innerType = target.InnerType?.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat) ?? "object";
 
-        var ns = symbol.ContainingNamespace?.ToDisplayString();
-        var namespaceDeclaration = !string.IsNullOrEmpty(ns) ? $"namespace {ns};" : "";
+        var @namespace = symbol.ContainingNamespace?.ToDisplayString();
+        var namespaceDeclaration = !string.IsNullOrEmpty(@namespace) ? $"namespace {@namespace};" : "";
 
         // Type declaration components
         var typeKind = symbol.TypeKind == TypeKind.Struct ? "struct" : "class";
         var nameWithTypeParams = symbol.Name;
-        if (symbol.TypeParameters.Length > 0)
-        {
-            var tpList = string.Join(", ", symbol.TypeParameters.Select(p => p.ToDisplayString()));
-            nameWithTypeParams += "<" + tpList + ">";
-        }
+        if (symbol.TypeParameters.Length == 1)
+            nameWithTypeParams += "<" + symbol.TypeParameters[0].ToDisplayString() + ">";
+        else if (symbol.TypeParameters.Length > 1)
+            nameWithTypeParams += "<" + string.Join(
+                ", ",
+                symbol.TypeParameters.Select(p => p.ToDisplayString())) + ">";
 
         var accessibility = symbol.DeclaredAccessibility switch
         {
@@ -106,72 +112,125 @@ public sealed class MicroTypeIncrementalGenerator : IIncrementalGenerator
 
         // Member generation flags
         var fieldAccessibility = symbol.IsSealed ? "private readonly" : "protected readonly";
-        var hasParse = symbol.GetMembers().Any(m => m.Name == "Parse");
         var parseAccessibility = symbol.IsSealed ? "" : "protected ";
-        var hasEqualsObj = symbol.GetMembers().OfType<IMethodSymbol>()
-            .Any(m => m.Name == "Equals" && m.Parameters.Length == 1 && m.Parameters[0].Type.SpecialType == SpecialType.System_Object);
-        var hasEqualsOther = symbol.GetMembers().OfType<IMethodSymbol>()
-            .Any(m => m.Name == "Equals" && m.Parameters.Length == 1 && m.Parameters[0].Type.Name == symbol.Name);
-        var hasGetHash = symbol.GetMembers().Any(m => m.Name == "GetHashCode");
-        var hasToString = symbol.GetMembers().Any(m => m.Name == "ToString");
-        var hasEqOp = symbol.GetMembers().Any(m => m.Name == "op_Equality");
-        var hasNeOp = symbol.GetMembers().Any(m => m.Name == "op_Inequality");
+
         var isStruct = symbol.TypeKind == TypeKind.Struct;
         var nullability = isStruct ? "" : "?";
 
+        var hasParse = false;
+        var hasEqualsObj = false;
+        var hasEqualsOther = false;
+        var hasGetHash = false;
+        var hasToString = false;
+        var hasEqOp = false;
+        var hasNeOp = false;
+
+        foreach (var member in symbol.GetMembers())
+        {
+            switch (member)
+            {
+                case IMethodSymbol { Name: "Parse", ReturnType: var ret, Parameters: [{ RefKind: RefKind.In, Type: var param }] }
+                    when !hasParse && Default.Equals(param, target.InnerType) && Default.Equals(ret, target.InnerType):
+                    hasParse = true;
+                    break;
+
+                case IMethodSymbol { Name: "Equals", ReturnType.SpecialType: SpecialType.System_Boolean, Parameters: [{ Type.SpecialType: SpecialType.System_Object }] }
+                    when !hasEqualsObj:
+                    hasEqualsObj = true;
+                    break;
+
+                case IMethodSymbol { Name: "Equals", ReturnType.SpecialType: SpecialType.System_Boolean, Parameters: [{ Type: var param }] }
+                    when !hasEqualsOther && Default.Equals(param, symbol):
+                    hasEqualsOther = true;
+                    break;
+
+                case IMethodSymbol { Name: "GetHashCode", Parameters.Length: 0, ReturnType.SpecialType: SpecialType.System_Int32 }
+                    when !hasGetHash:
+                    hasGetHash = true;
+                    break;
+
+                case IMethodSymbol { Name: "ToString", Parameters.Length: 0, ReturnType.SpecialType: SpecialType.System_String }
+                    when !hasToString:
+                    hasToString = true;
+                    break;
+
+                case IMethodSymbol { Name: "op_Equality", ReturnType.SpecialType: SpecialType.System_Boolean, Parameters: [{ Type: var left }, { Type: var right }] }
+                    when !hasEqOp && Default.Equals(left, symbol) && Default.Equals(right, symbol):
+                    hasEqOp = true;
+                    break;
+
+                case IMethodSymbol { Name: "op_Inequality", ReturnType.SpecialType: SpecialType.System_Boolean, Parameters: [{ Type: var left }, { Type: var right }] }
+                    when !hasNeOp && Default.Equals(left, symbol) && Default.Equals(right, symbol):
+                    hasNeOp = true;
+                    break;
+            }
+
+            if (hasParse && hasEqualsObj && hasEqualsOther && hasGetHash && hasToString && hasEqOp && hasNeOp)
+                break;
+        }
+
         // Build optional members
-        var parseMethod = !hasParse ? $$"""
-                
+        var members = new StringBuilder(512);
+
+        if (!hasParse)
+            members.Append($$"""
+
                 [System.Diagnostics.Contracts.Pure]
                 {{parseAccessibility}}{{innerType}} Parse(in {{innerType}} source) => source;
-            """ : "";
+            """);
 
-        var equalsObjMethod = !hasEqualsObj ? $$"""
-                
+        if (!hasEqualsObj)
+            members.Append($$"""
+
                 public override bool Equals(object? obj) =>
                     obj is {{symbol.Name}} { inner: var other } && inner.Equals(other);
-            """ : "";
+            """);
 
-        var equalsOtherMethod = !hasEqualsOther
-            ? isStruct
-                ? $$"""
-                        
-                        public bool Equals({{symbol.Name}} other) => inner == other.inner;
-                    """
-                : $$"""
-                        
-                        public bool Equals({{symbol.Name}}? other) => inner == other?.inner;
-                    """
-            : "";
+        if (!hasEqualsOther)
+        {
+            if (isStruct)
+                members.Append($$"""
 
-        var getHashMethod = !hasGetHash ? """
-                
+                public bool Equals({{symbol.Name}} other) => inner == other.inner;
+            """);
+            else
+                members.Append($$"""
+
+                public bool Equals({{symbol.Name}}? other) => inner == other?.inner;
+            """);
+        }
+
+        if (!hasGetHash)
+            members.Append("""
+
                 public override int GetHashCode() => inner.GetHashCode();
-            """ : "";
+            """);
 
-        var toStringMethod = !hasToString ? """
-                
+        if (!hasToString)
+            members.Append("""
+
                 public override string ToString() => inner.ToString();
-            """ : "";
+            """);
 
-        var equalityOp = !hasEqOp
-            ? isStruct
-                ? $$"""
-                        
-                        public static bool operator ==({{symbol.Name}} left, {{symbol.Name}} right) => left.Equals(right);
-                    """
-                : $$"""
-                        
-                        public static bool operator ==({{symbol.Name}}? left, {{symbol.Name}}? right) => left?.Equals(right) ?? right is null;
-                    """
-            : "";
+        if (!hasEqOp)
+        {
+            if (isStruct)
+                members.Append($$"""
 
-        var inequalityOp = !hasNeOp
-            ? $$"""
-                    
-                    public static bool operator !=({{symbol.Name}}{{nullability}} left, {{symbol.Name}}{{nullability}} right) => !(left == right);
-                """
-            : "";
+                public static bool operator ==({{symbol.Name}} left, {{symbol.Name}} right) => left.Equals(right);
+            """);
+            else
+                members.Append($$"""
+
+                public static bool operator ==({{symbol.Name}}? left, {{symbol.Name}}? right) => left?.Equals(right) ?? right is null;
+            """);
+        }
+
+        if (!hasNeOp)
+            members.Append($$"""
+
+                public static bool operator !=({{symbol.Name}}{{nullability}} left, {{symbol.Name}}{{nullability}} right) => !(left == right);
+            """);
 
         return $$"""
             {{namespaceDeclaration}}
@@ -184,7 +243,7 @@ public sealed class MicroTypeIncrementalGenerator : IIncrementalGenerator
                 {{fieldAccessibility}} {{innerType}} inner;
 
                 public {{symbol.Name}}({{innerType}} value) => inner = Parse(value);
-            {{parseMethod}}{{equalsObjMethod}}{{equalsOtherMethod}}{{getHashMethod}}{{toStringMethod}}{{equalityOp}}{{inequalityOp}}
+            {{members}}
 
                 public static implicit operator {{innerType}}({{symbol.Name}} value) => value.inner;
 
@@ -201,15 +260,15 @@ public sealed class MicroTypeIncrementalGenerator : IIncrementalGenerator
         public ITypeSymbol? InnerType { get; } = innerType;
 
         public bool Equals(MicroTypeTarget other) =>
-            SymbolEqualityComparer.Default.Equals(Symbol, other.Symbol) &&
-            SymbolEqualityComparer.Default.Equals(InnerType, other.InnerType);
+            Default.Equals(Symbol, other.Symbol) &&
+            Default.Equals(InnerType, other.InnerType);
 
         public override bool Equals(object? obj) =>
             obj is MicroTypeTarget other && Equals(other);
 
         public override int GetHashCode() =>
             HashCode.Combine(
-                SymbolEqualityComparer.Default.GetHashCode(Symbol),
-                InnerType is not null ? SymbolEqualityComparer.Default.GetHashCode(InnerType) : 0);
+                Default.GetHashCode(Symbol),
+                InnerType is not null ? Default.GetHashCode(InnerType) : 0);
     }
 }
